@@ -1,0 +1,95 @@
+name: aangan-local
+services:
+  auth-postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: storefront_auth
+      POSTGRES_USER: storefront_auth
+      POSTGRES_PASSWORD: local-auth-only
+    volumes: ["auth-data:/var/lib/postgresql/data", "./infra/auth-store/001_sessions.sql:/docker-entrypoint-initdb.d/001_sessions.sql:ro"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U storefront_auth"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: commerce
+      POSTGRES_USER: commerce
+      POSTGRES_PASSWORD: local-database-only
+    volumes: ["commerce-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U commerce"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    volumes: ["kafka-data:/tmp/kraft-combined-logs"]
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.3
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: 'false'
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes: ["search-data:/usr/share/elasticsearch/data"]
+  commerce:
+    build: services/commerce
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/commerce
+      DATABASE_PASSWORD: local-database-only
+      KAFKA_BOOTSTRAP: kafka:9092
+      LOCAL_MODE: 'true'
+      GUEST_SECRET: ${GUEST_SECRET:-local-only-guest-signing-secret-rotate-before-sharing}
+      SELLER_TOKEN: ${SELLER_TOKEN:-local-seller-a}
+      SELLER_B_TOKEN: ${SELLER_B_TOKEN:-local-seller-b}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-admin}
+      CUSTOMER_TOKEN: ${CUSTOMER_TOKEN:-local-customer-a}
+      CUSTOMER_B_TOKEN: ${CUSTOMER_B_TOKEN:-local-customer-b}
+      PAYMENT_MODE: ${PAYMENT_MODE:-mock}
+      RAZORPAY_KEY: ${RAZORPAY_KEY:-}
+      RAZORPAY_SECRET: ${RAZORPAY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_started}
+  discovery:
+    build: services/discovery
+    environment:
+      COMMERCE_URL: http://commerce:8080
+      ELASTIC_URL: http://elasticsearch:9200
+      KAFKA_BROKER: kafka:9092
+    ports: ["127.0.0.1:8081:8081"]
+    depends_on: [commerce, elasticsearch, kafka]
+  storefront:
+    build: apps/storefront
+    environment:
+      AUTH_DATABASE_URL: postgres://storefront_auth:local-auth-only@auth-postgres:5432/storefront_auth
+      AUTH_ENCRYPTION_KEY: ${AUTH_ENCRYPTION_KEY:-1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef}
+      COMMERCE_URL: http://commerce:8080
+      DISCOVERY_URL: http://discovery:8081
+      GUEST_SECRET: ${GUEST_SECRET:-local-only-guest-signing-secret-rotate-before-sharing}
+      LOCAL_MODE: 'true'
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [commerce, discovery]
+volumes:
+  auth-data:
+  commerce-data:
+  kafka-data:
+  search-data:

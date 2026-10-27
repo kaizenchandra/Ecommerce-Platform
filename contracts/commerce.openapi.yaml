@@ -1,0 +1,629 @@
+openapi: 3.1.0
+info:
+  title: Aangan commerce and discovery
+  version: 0.1.0
+  description: >-
+    Local first-slice contract. All monetary values are INR paise. Private resources require
+    bearer identity; the Next.js BFF stores it in HttpOnly cookies and enforces request origin.
+    Local seller/admin credentials are not production identity. Catalog is bounded to 100 results;
+    cursor pagination and ingress rate limits remain release work. Changes must be additive within v1.
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - bearer: []
+paths:
+  /api/seller/orders:
+    get:
+      operationId: sellerFulfillmentOrders
+      description: Seller role only; latest 50 confirmed purchases containing this seller's immutable items. Returns only that seller's items and the shipping address needed for fulfillment. No customer identity, payment credentials or other seller lines are returned. Not a complete paginated operations backlog.
+      responses:
+        '200':
+          description: Owned fulfillment queue
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 50
+                items:
+                  type: object
+                  required: [checkoutId, address, items, shipment]
+                  properties:
+                    checkoutId: {type: string, format: uuid}
+                    address: {$ref: '#/components/schemas/Selection/properties/address'}
+                    shipment: {$ref: '#/components/schemas/Shipment'}
+                    items:
+                      type: array
+                      items:
+                        type: object
+                        required: [offerId, title, quantity]
+                        properties:
+                          offerId: {type: string, format: uuid}
+                          title: {type: string}
+                          quantity: {type: integer, minimum: 1, maximum: 10}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/seller/orders/{id}/fulfillment:
+    post:
+      operationId: advanceSellerFulfillment
+      description: AWAITING_FULFILLMENT → PACKED → SHIPPED → DELIVERED, one shipment for all seller items. Requires confirmed capture, authenticated seller ownership and matching expectedSellerId. Exact state/details replay is a no-op; other stale versions or invalid transitions return 409. Carrier/reference required at shipment and immutable afterward. Delivery is seller-reported, not carrier-verified. Writes audit and outbox atomically; no payment or stock mutation.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state, expectedVersion, expectedSellerId]
+              properties:
+                state: {type: string, enum: [PACKED, SHIPPED, DELIVERED]}
+                expectedVersion: {type: integer, minimum: 0}
+                expectedSellerId: {type: string, description: Must match authenticated principal; never authorizes access by itself.}
+                carrier: {type: string, maxLength: 80}
+                trackingReference: {type: string, maxLength: 120}
+      responses:
+        '200': {description: Current shipment, content: {application/json: {schema: {$ref: '#/components/schemas/Shipment'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/checkouts/{id}/shipments:
+    get:
+      operationId: customerShipments
+      description: Checkout owner only, including guest capabilities. Returns seller shipment summaries for confirmed purchases, empty for pending/expired/review. Unauthorized ownership returns 404.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Seller-reported shipments, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Shipment'}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/account:
+    get:
+      operationId: getAccount
+      description: REGISTERED_CUSTOMER role only. Subject from validated identity; no caller-selected customer ID. Supports configured OIDC JWTs with required audience and assurance, or LOCAL_MODE fixtures.
+      responses:
+        '200': {description: Own profile, content: {application/json: {schema: {$ref: '#/components/schemas/Account'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: saveAccount
+      description: Saves one default address and display name. Stale version returns 409; identical replay is a no-op. No email/identity verification claim is derived from these fields.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName, address, expectedVersion]
+              properties:
+                displayName: {type: string, minLength: 1, maxLength: 100}
+                address: {$ref: '#/components/schemas/Selection/properties/address'}
+                expectedVersion: {type: integer, minimum: 0}
+      responses:
+        '200': {description: Saved profile, content: {application/json: {schema: {$ref: '#/components/schemas/Account'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/account/identity:
+    get:
+      operationId: accountIdentity
+      description: Registered customer's authenticated subject. Used server-to-server to bind access tokens to the OIDC session; never accepts a caller-selected subject. Not exposed by the storefront BFF.
+      responses:
+        '200':
+          description: Authenticated identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subject]
+                properties:
+                  subject: {type: string}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/account/wishlist:
+    get:
+      operationId: getWishlist
+      description: Registered customer's saved offers. At most 100; newest first. Unpublished offers remain saved with null offer. No inventory reservation.
+      responses:
+        '200':
+          description: Own saved offers
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items:
+                  type: object
+                  required: [offerId, offer]
+                  properties:
+                    offerId: {type: string, format: uuid}
+                    offer:
+                      oneOf:
+                        - {$ref: '#/components/schemas/Offer'}
+                        - {type: 'null'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: setWishlistItem
+      description: Absolute saved state; retries are idempotent. Customer lock enforces 100-offer cap. Saving requires a published offer; removal is owner-scoped. Does not reserve inventory or preserve a quoted price.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [offerId, saved]
+              properties:
+                offerId: {type: string, format: uuid}
+                saved: {type: boolean}
+      responses:
+        '200': {$ref: '#/paths/~1api~1account~1wishlist/get/responses/200'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/account/orders:
+    get:
+      operationId: accountOrders
+      description: REGISTERED_CUSTOMER only. Latest 50 checkouts owned by this account, including pending/expired. Guest orders are not transferred. Pagination remains release work.
+      responses:
+        '200':
+          description: Own checkout history
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 50
+                items:
+                  type: object
+                  required: [id, title, total_paise, state, created_at]
+                  properties:
+                    id: {type: string, format: uuid}
+                    title: {type: string}
+                    total_paise: {type: integer, minimum: 1}
+                    state: {type: string, enum: [PENDING, CONFIRMED, EXPIRED, REVIEW]}
+                    created_at: {type: string, format: date-time}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/account/merge-cart:
+    post:
+      operationId: mergeGuestCart
+      description: REGISTERED_CUSTOMER only. Requires unexpired HMAC-signed guest proof. Adds quantities atomically under ordered cart locks. Exceeding 20 offers or quantity 10 rejects without changes. Guest bag may be claimed by exactly one account; same-account replay is a no-op, another account gets 409. Consumed guest bag rejects future writes. Does not transfer guest orders or change inventory.
+      parameters:
+        - {name: X-Guest-Proof, in: header, required: true, schema: {type: string}, description: Secret guest capability. BFF supplies from HttpOnly cookie; never log.}
+      responses:
+        '200': {description: Merged account cart, content: {application/json: {schema: {$ref: '#/components/schemas/Cart'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/cart:
+    get:
+      operationId: getOwnCart
+      description: CUSTOMER only, derived from the authenticated subject. Durable saved selections, not reservations. Guest access lasts only as long as the guest identity. Current public offers are enriched from authoritative catalog; unavailable offers have null offer.
+      responses:
+        '200': {description: Own cart, content: {application/json: {schema: {$ref: '#/components/schemas/Cart'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/cart/items:
+    post:
+      operationId: setCartQuantity
+      description: CUSTOMER only. Absolute quantity, zero removes. Stale expectedVersion returns 409 unless requested quantity already matches (safe replay). Maximum 20 distinct offers; no stock reservation. Refresh after conflict. Checkout does not automatically empty the cart.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [offerId, quantity, expectedVersion]
+              properties:
+                offerId: {type: string, format: uuid}
+                quantity: {type: integer, minimum: 0, maximum: 10}
+                expectedVersion: {type: integer, minimum: 0}
+      responses:
+        '200': {description: Updated cart, content: {application/json: {schema: {$ref: '#/components/schemas/Cart'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/checkouts/basket:
+    post:
+      operationId: reserveBasket
+      description: CUSTOMER only. Atomically validates and reserves 1–20 distinct offers, each with quantity 1–10, at submitted expected prices. No partial reservation. Canonical item set and address are bound to the customer-scoped idempotency key, retained with checkout. Reordered identical selections return the original checkout; changed selection returns 409. One provider order for the server-calculated INR total. Basket selections need not be in the saved cart, and cart contents are not removed.
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, pattern: '^[A-Za-z0-9_-]{8,100}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items, address]
+              properties:
+                address: {$ref: '#/components/schemas/Selection/properties/address'}
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items:
+                    type: object
+                    required: [offerId, quantity, expectedPricePaise]
+                    properties:
+                      offerId: {type: string, format: uuid}
+                      quantity: {type: integer, minimum: 1, maximum: 10}
+                      expectedPricePaise: {type: integer, minimum: 1, maximum: 100000000}
+      responses:
+        '201': {$ref: '#/components/responses/Checkout'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/admin/payments:
+    get:
+      operationId: paymentRecoveryQueue
+      description: ADMIN only; newest 100 pending/review exceptions, without customer addresses. This bounded queue requires pagination before production scale.
+      responses:
+        '200': {description: Recovery queue, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/PaymentException'}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/admin/payments/{id}/history:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: paymentRecoveryHistory
+      description: ADMIN only; newest 50 durable attempts. Unknown checkout returns an empty list.
+      responses:
+        '200': {description: Attempts, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/RecoveryAttempt'}}}}}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/admin/payments/{id}/reconcile:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    post:
+      operationId: reconcilePayment
+      description: ADMIN only; fetches existing provider evidence, never creates or captures a payment. Repeated confirmation is a no-op. Active lease returns 409. Explicit manual requests can exceed the 12-attempt automatic limit.
+      responses:
+        '200': {description: Verification result, content: {application/json: {schema: {$ref: '#/components/schemas/RecoveryResult'}}}}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/admin/payments/{id}/link:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    post:
+      operationId: linkVerifiedProviderOrder
+      description: ADMIN only; independently verifies provider receipt, amount and currency before linking. Never confirms payment. Safe to repeat the same link; rejects a different existing order or captured checkout.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [providerOrderId], properties: {providerOrderId: {type: string, minLength: 1, maxLength: 100}}}}}
+      responses:
+        '200': {description: Verified link, content: {application/json: {schema: {$ref: '#/components/schemas/RecoveryResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /api/seller/finance:
+    get:
+      operationId: sellerCaptureSummary
+      description: SELLER only; scope derived from identity. Gross capture accounting is not a payout balance. Returns at most 100 recent entries and an all-time gross total excluding refund-liability captures.
+      responses:
+        '200':
+          description: Own capture journal
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [currency, grossCapturedPaise, entries]
+                properties:
+                  currency: {const: INR}
+                  grossCapturedPaise: {type: integer, minimum: 0}
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      required: [checkout_id, amount_paise, credit_account, created_at]
+                      properties:
+                        checkout_id: {type: string, format: uuid}
+                        amount_paise: {type: integer, minimum: 1}
+                        credit_account: {type: string, enum: [SELLER_GROSS_PAYABLE, CUSTOMER_REFUND_LIABILITY]}
+                        created_at: {type: string, format: date-time}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/checkouts/{id}/simulate-provider-capture:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    post:
+      operationId: simulateInterruptedProviderCapture
+      description: Local mock mode only, customer ownership required. Persists simulated provider evidence without invoking order confirmation. Used to verify independent reconciliation; no real payment. Not exposed by the browser BFF.
+      responses:
+        '200': {description: Fixture evidence persisted, content: {application/json: {schema: {type: object, properties: {status: {const: SIMULATED_PROVIDER_CAPTURE_RECORDED}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/catalog:
+    get:
+      operationId: listCatalog
+      security: []
+      parameters: [{name: q, in: query, schema: {type: string, maxLength: 100}}]
+      responses:
+        '200': {description: Published offers only, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Offer'}}}}}
+        '400': {$ref: '#/components/responses/Error'}
+  /api/catalog/{id}:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: getOffer
+      security: []
+      responses:
+        '200': {description: Current authoritative public offer, content: {application/json: {schema: {$ref: '#/components/schemas/Offer'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/seller/offers:
+    get:
+      operationId: listOwnOffers
+      description: SELLER role; seller scope derived from identity, never query input.
+      responses:
+        '200': {description: Own listings, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Offer'}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: submitOffer
+      description: Creates a draft product and offer. Submission idempotency is not yet supported; do not automatically retry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, category, description, pricePaise, stock]
+              properties:
+                title: {type: string, minLength: 1, maxLength: 160}
+                category: {type: string, minLength: 1, maxLength: 60}
+                description: {type: string, maxLength: 2000}
+                pricePaise: {type: integer, minimum: 1, maximum: 100000000}
+                stock: {type: integer, minimum: 0, maximum: 100000}
+      responses:
+        '201': {description: Draft listing, content: {application/json: {schema: {$ref: '#/components/schemas/Offer'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/admin/offers:
+    get:
+      operationId: moderationQueue
+      description: ADMIN role only.
+      responses:
+        '200': {description: Draft listings, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Offer'}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/admin/offers/{id}/publish:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    post:
+      operationId: publishOffer
+      description: ADMIN role; repeated publication is an idempotent no-op.
+      responses:
+        '200': {description: Published listing, content: {application/json: {schema: {$ref: '#/components/schemas/Offer'}}}}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/checkouts:
+    post:
+      operationId: reserveCheckout
+      description: >-
+        CUSTOMER role. Server validates price and stock. Key scoped to customer; same payload returns
+        existing checkout; changed payload returns 409. Retained with checkout, no automatic deletion.
+        Response can remain PENDING with providerState UNKNOWN. Never blindly recreate provider orders.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, pattern: '^[A-Za-z0-9_-]{8,100}$'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Selection'}}}
+      responses:
+        '201': {$ref: '#/components/responses/Checkout'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/checkouts/{id}:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: getCheckout
+      description: Customer ownership required; other customer's resources return 404.
+      responses:
+        '200': {$ref: '#/components/responses/Checkout'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/checkouts/{id}/payment-config:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: paymentConfig
+      responses:
+        '200': {description: Publishable key only, content: {application/json: {schema: {type: object, properties: {key: {type: string}, mode: {type: string, enum: [mock, razorpay-test]}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/checkouts/{id}/simulate-capture:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    post:
+      operationId: simulateCapture
+      description: Local mock mode only, customer-owned checkout; no actual financial transaction.
+      responses:
+        '200': {$ref: '#/components/responses/Checkout'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/checkouts/{id}/callback:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    post:
+      operationId: verifyCallback
+      description: Signature uses server-stored provider order ID; provider fetch must independently report captured before confirmation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paymentId, signature]
+              properties:
+                paymentId: {type: string}
+                signature: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/Checkout'}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/webhooks/razorpay:
+    post:
+      operationId: razorpayWebhook
+      security: []
+      description: Raw-body HMAC-SHA256 verification, then authenticated provider fetch. Duplicate capture is a no-op. Non-capture events are acknowledged without state mutation.
+      parameters:
+        - {name: X-Razorpay-Signature, in: header, required: true, schema: {type: string}}
+        - {name: X-Razorpay-Event-Id, in: header, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object}}}
+      responses:
+        '200': {description: Authenticated notification processed or irrelevant event ignored}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/search:
+    get:
+      operationId: search
+      servers: [{url: 'http://127.0.0.1:8081'}]
+      security: []
+      parameters: [{name: q, in: query, schema: {type: string, maxLength: 100}}]
+      responses:
+        '200':
+          description: Public search projection; availability must be revalidated for purchase.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Offer'}}
+                  source: {type: string, enum: [elasticsearch, authoritative-fallback]}
+                  limit: {type: integer, const: 100}
+        '400': {description: Invalid query}
+        '503': {description: Search and catalog unavailable; retry a read with bounded backoff}
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer}
+  parameters:
+    Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+  responses:
+    Error:
+      description: Rejected request; do not automatically retry writes. Security filters may return the framework error envelope.
+      content: {application/json: {schema: {type: object, properties: {error: {type: string}}}}}
+    Checkout:
+      description: Persisted checkout status; PENDING is not confirmed payment.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Checkout'}}}
+  schemas:
+    Shipment:
+      type: object
+      required: [checkoutId, sellerId, state, carrier, trackingReference, version]
+      properties:
+        checkoutId: {type: string, format: uuid}
+        sellerId: {type: string}
+        state: {type: string, enum: [AWAITING_FULFILLMENT, PACKED, SHIPPED, DELIVERED]}
+        carrier: {type: string, maxLength: 80}
+        trackingReference: {type: string, maxLength: 120}
+        version: {type: integer, minimum: 0}
+    Account:
+      type: object
+      required: [display_name, address, version]
+      properties:
+        display_name: {type: string, maxLength: 100}
+        version: {type: integer, minimum: 0}
+        address: {oneOf: [{$ref: '#/components/schemas/Selection/properties/address'}, {type: 'null'}]}
+    Cart:
+      type: object
+      required: [version, items]
+      properties:
+        version: {type: integer, minimum: 0}
+        items:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            required: [offerId, quantity, offer]
+            properties:
+              offerId: {type: string, format: uuid}
+              quantity: {type: integer, minimum: 1, maximum: 10}
+              offer: {oneOf: [{$ref: '#/components/schemas/Offer'}, {type: 'null'}]}
+    CheckoutItem:
+      type: object
+      required: [offerId, sellerId, title, quantity, unitPaise]
+      properties:
+        offerId: {type: string, format: uuid}
+        sellerId: {type: string}
+        title: {type: string}
+        quantity: {type: integer, minimum: 1, maximum: 10}
+        unitPaise: {type: integer, minimum: 1, maximum: 100000000}
+    RecoveryResult:
+      type: object
+      required: [checkoutId, outcome]
+      properties:
+        checkoutId: {type: string, format: uuid}
+        outcome: {type: string, enum: [ALREADY_FINAL, ORDER_LINK_REQUIRED, AWAITING_CAPTURE, CAPTURE_VERIFIED, EVIDENCE_MISMATCH, PROVIDER_UNAVAILABLE, APPLICATION_FAILURE, ORDER_LINK_VERIFIED]}
+    RecoveryAttempt:
+      type: object
+      required: [id, actor, started_at, completed_at, outcome]
+      properties:
+        id: {type: string, format: uuid}
+        actor: {type: string}
+        started_at: {type: string, format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+        outcome: {type: string}
+    PaymentException:
+      type: object
+      required: [id, title, total_paise, state, provider_state, provider_order_id, reconcile_attempts, reconcile_outcome, reconcile_after, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string}
+        total_paise: {type: integer, minimum: 1}
+        state: {type: string, enum: [PENDING, REVIEW, EXPIRED]}
+        provider_state: {type: string}
+        provider_order_id: {type: [string, 'null']}
+        reconcile_attempts: {type: integer, minimum: 0}
+        reconcile_outcome: {type: [string, 'null']}
+        reconcile_after: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+    Offer:
+      type: object
+      required: [id, productId, title, category, description, sellerId, sellerName, pricePaise, available, status, version]
+      properties:
+        id: {type: string, format: uuid}
+        productId: {type: string, format: uuid}
+        title: {type: string}
+        category: {type: string}
+        description: {type: string}
+        sellerId: {type: string}
+        sellerName: {type: string}
+        pricePaise: {type: integer, minimum: 1}
+        available: {type: integer, minimum: 0}
+        status: {type: string, enum: [DRAFT, PUBLISHED]}
+        version: {type: integer, minimum: 1}
+    Selection:
+      type: object
+      required: [offerId, quantity, expectedPricePaise, address]
+      properties:
+        offerId: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 10}
+        expectedPricePaise: {type: integer, minimum: 1, maximum: 100000000}
+        address:
+          type: object
+          required: [name, line, city, pin]
+          properties:
+            name: {type: string, minLength: 1, maxLength: 100}
+            line: {type: string, minLength: 5, maxLength: 300}
+            city: {type: string, minLength: 1, maxLength: 100}
+            pin: {type: string, pattern: '^[1-9][0-9]{5}$'}
+    Checkout:
+      type: object
+      required: [id, title, quantity, unitPaise, totalPaise, state, providerOrderId, providerState, expiresAt, paymentMode, items]
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string}
+        quantity: {type: integer, description: Legacy first-line quantity. Multi-item clients must sum items quantities.}
+        unitPaise: {type: integer, description: Legacy first-line price. Use items for multi-item checkout.}
+        items: {type: array, minItems: 1, maxItems: 20, items: {$ref: '#/components/schemas/CheckoutItem'}}
+        totalPaise: {type: integer}
+        state: {type: string, enum: [PENDING, CONFIRMED, EXPIRED, REVIEW]}
+        providerOrderId: {type: [string, 'null']}
+        providerState: {type: string, enum: [CREATING, READY, UNKNOWN, CAPTURED]}
+        expiresAt: {type: string, format: date-time}
+        paymentMode: {type: string, enum: [mock, razorpay-test]}

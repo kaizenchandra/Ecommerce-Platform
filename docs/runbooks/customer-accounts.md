@@ -1,0 +1,17 @@
+# Customer account development flow
+
+This guide covers **local identity fixtures**, not production authentication. Compose configures `local-customer-a` and `local-customer-b`. The backend accepts these only with LOCAL_MODE, mapping them to distinct registered-customer subjects. Account endpoints reject guests, sellers and administrators without the registered-customer role. The BFF validates credentials before setting a one-hour HttpOnly, SameSite cookie. LOCAL_MODE=false disables local sign-in and fixture mapping. The separately implemented [OIDC/session integration](oidc-and-session-recovery.md) supports configured customer providers; real provider/MFA and password-recovery policy remain unverified.
+
+Open Account, sign in using a local customer credential, save a display name and default delivery address, and explicitly choose Merge guest bag. The saved account address can be loaded in checkout and reviewed before submission. Account order history lists the latest 50 owned checkouts including pending/expired states; it never uses seller/admin identity or a request customerId. Account/profile updates use version checks. Identical retries are no-ops; conflicting stale edits require refresh.
+
+The merge verifies the signed, unexpired guest capability supplied by the BFF from its HttpOnly cookie. Source and destination locks serialize concurrent edits/merges. Quantities add; overflow rejects all changes. A unique guest claim prevents repeated addition and cross-account reuse. It does not reserve stock, alter prices, transfer orders or mark payments successful. The consumed guest bag rejects later writes. Continue shopping with the claiming account; logout retains the original guest identity to preserve access to existing guest orders. A general fresh-guest-session/recovery workflow remains outstanding.
+
+Finish guest payments before signing in. Local sign-in is blocked when an unresolved checkout payload exists in session storage. Identity-bound BFF writes additionally reject stale-tab updates, and checkout retries retain their original identity. Guest orders cannot be accessed as account orders and are not silently reassigned. Production rollout must resolve guest-order adoption, upstream revocation, account deletion and privacy retention before public use.
+
+## Verification and operation
+
+`node --test tests/account.test.mjs` verifies profile/order isolation, guest/seller denial, stale updates, proof expiry/invalid formatting, concurrent duplicate merge, cross-account rejection, consumed-guest write denial, overflow rollback and account capture. Tests use fixed local customers and clear only their local fixture carts; never run against a shared or production environment. Run backend tests before browser account tests because both use the same isolated fixture identities.
+
+`npm run test:e2e` in the storefront exercises desktop/mobile login, profile reload, merge retry, saved address, account checkout, confirmation, history and logout, with accessibility checks. Secrets and guest capabilities must not be logged. The checked-in fixture credentials are intentionally public and must not be reused outside isolated local development.
+
+V5 adds customer profiles, unique cart merge claims and an account-history index. V6 adds private wishlists. Existing checkout ownership and payments remain unchanged. Profiles contain delivery PII in PostgreSQL; encryption, access auditing, deletion/export policy, retention and backup controls are deployment gates. Multiple addresses and history pagination remain unimplemented.

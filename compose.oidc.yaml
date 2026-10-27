@@ -1,0 +1,35 @@
+# Isolated protocol fixture, NOT a real identity/MFA provider. Never expose publicly.
+services:
+  oidc:
+    image: node:22-alpine
+    command: ["node", "/fixture/provider.mjs"]
+    volumes: ["./tests/oidc:/fixture:ro"]
+    ports: ["127.0.0.1:8090:8090"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/.well-known/openid-configuration').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  commerce:
+    depends_on:
+      oidc: {condition: service_healthy}
+    environment:
+      OIDC_ISSUER: http://127.0.0.1:8090
+      OIDC_JWKS_URI: http://oidc:8090/jwks
+      OIDC_AUDIENCE: aangan-api
+      OIDC_REQUIRED_ACR: urn:aangan:test:mfa
+  storefront:
+    depends_on:
+      commerce: {condition: service_started}
+      discovery: {condition: service_started}
+      auth-postgres: {condition: service_healthy}
+      oidc: {condition: service_healthy}
+    environment:
+      OIDC_ISSUER: http://127.0.0.1:8090
+      OIDC_INTERNAL_ORIGIN: http://oidc:8090
+      OIDC_ALLOW_HTTP: 'true'
+      OIDC_CLIENT_ID: aangan-web
+      OIDC_CLIENT_SECRET: local-oidc-client-only
+      OIDC_AUDIENCE: aangan-api
+      OIDC_REQUIRED_ACR: urn:aangan:test:mfa
+      APP_URL: http://127.0.0.1:3000

@@ -1,0 +1,22 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://aangan.example/contracts/catalog-event.v1.json",
+  "title":"Public catalog snapshot v1",
+  "type":"object",
+  "required":["eventId","type","schemaVersion","aggregateId","version","occurredAt","offer"],
+  "properties":{
+    "eventId":{"type":"string","format":"uuid"},
+    "type":{"const":"OfferSnapshot"},
+    "schemaVersion":{"const":1},
+    "aggregateId":{"type":"string","format":"uuid"},
+    "version":{"type":"integer","minimum":1},
+    "occurredAt":{"type":"string","format":"date-time"},
+    "offer":{"type":"object","required":["id","productId","title","category","description","sellerId","sellerName","pricePaise","available","status","version"],"properties":{
+      "id":{"type":"string","format":"uuid"},"productId":{"type":"string","format":"uuid"},
+      "title":{"type":"string"},"category":{"type":"string"},"description":{"type":"string"},
+      "sellerId":{"type":"string"},"sellerName":{"type":"string"},"pricePaise":{"type":"integer","minimum":1},
+      "available":{"type":"integer","minimum":0},"status":{"const":"PUBLISHED"},"version":{"type":"integer","minimum":1}
+    }}
+  },
+  "description":"Java producer, Go consumer. Kafka key is aggregateId. At-least-once delivery. Full public snapshot; no addresses or customer/payment data. External version makes duplicate/reordered deliveries safe. Unknown schema blocks consumer for operator action; DLQ automation pending. Aggregate ID is initial correlation key; end-to-end trace correlation remains pending."
+}

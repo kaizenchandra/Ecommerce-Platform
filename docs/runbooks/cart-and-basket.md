@@ -1,0 +1,19 @@
+# Saved bag and multi-item checkout
+
+Local customer journey: open a product → Add to saved bag → choose other products → review quantities → Review bag & delivery → enter address → Reserve & continue → controlled capture. Buy now retains the existing single-product route. The bag is saved in PostgreSQL, scoped to the signed guest subject, and survives browser reloads while that identity is valid. It does not reserve stock. Account sign-in, guest/account merge and cross-device recovery remain unimplemented.
+
+At most 20 distinct offers, each quantity 1–10. Cart writes set an absolute quantity and require the observed version. A stale change returns 409; refresh the bag before editing. Replaying an already-applied absolute quantity is a no-op. The product button retains its attempted update after a lost response so its retry does not increment twice. Removing uses quantity zero. Missing or fractional quantities are rejected. Current published offer prices/availability are enriched on reads; unavailable products remain removable without exposing unpublished product data.
+
+Checkout snapshots the displayed selection and address, then atomically verifies every current price and available quantity. Any mismatch/unavailable item rejects the complete reservation. Deterministic offer lock ordering is shared by reservation, capture and expiry. Reservation expiry processes one checkout per transaction to avoid cross-basket lock-order cycles. The provider receives a single server-calculated INR total.
+
+The canonical item set and address bind the customer-scoped idempotency key. Reordering the same items does not create a new checkout. Changed details with the same key are rejected. Browser attempts persist in session storage; an interrupted request retries the same key. Existing uncertainty is not cleared automatically. Legacy single-offer APIs still work. New clients must use `items` for line quantities/prices/sellers; legacy summary quantity/unit price fields describe the first line for compatibility.
+
+Each checkout item is an immutable database snapshot. Capture commits all reserved stock once and posts one balanced capture transfer per seller. Total seller transfers equal the verified payment total. Expired captures post seller-attributed customer refund liabilities without consuming stock reserved by another checkout. This is capture accounting, not fulfillment or net settlement. No refund is executed here.
+
+Saved bag contents deliberately remain after purchase. This is explained on the bag page; remove purchased selections before buying again. Automatic consumption requires a version-bound cart/checkout workflow and is not claimed. Guest identity expiry may leave inaccessible carts; retention/deletion policy and registered customer recovery remain release work. No Redis dependency is introduced.
+
+## Migrations and verification
+
+V3 backfills `checkout_item` from all existing single-offer checkout records and changes journal uniqueness to checkout/seller and payment/seller. V4 prevents item snapshot updates/deletes. Existing capture records are preserved. Deploy migrations before application code; do not roll back to a pre-multi-item application once multi-item checkouts exist, because that code would release/commit only the legacy first offer. Roll forward or restore a coordinated pre-release backup with an explicit payment reconciliation plan; no restore/rollback drill has yet been executed.
+
+Run `node --test tests/cart.test.mjs tests/system.test.mjs tests/reconciliation.test.mjs` against isolated local Compose. Browser tests run with `npm run test:e2e` in the storefront. Fixtures exercise real PostgreSQL transactions and local provider simulation; they are not Razorpay sandbox evidence. No production cart capacity, multi-instance soak, account merge, retention, real tax/shipping or payment-provider amount-limit qualification is claimed.

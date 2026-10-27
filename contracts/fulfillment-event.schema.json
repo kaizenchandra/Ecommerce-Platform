@@ -1,0 +1,14 @@
+{
+ "$schema":"https://json-schema.org/draft/2020-12/schema",
+ "$id":"https://aangan.example/contracts/fulfillment-event.v1",
+ "type":"object","additionalProperties":false,
+ "required":["eventId","type","schemaVersion","aggregateId","checkoutId","sellerId","state","version","occurredAt"],
+ "properties":{
+  "eventId":{"type":"string","format":"uuid"},
+  "type":{"const":"FulfillmentChanged"},"schemaVersion":{"const":1},
+  "aggregateId":{"type":"string","minLength":1},
+  "checkoutId":{"type":"string","format":"uuid"},"sellerId":{"type":"string","minLength":1},
+  "state":{"enum":["PACKED","SHIPPED","DELIVERED"]},"version":{"type":"integer","minimum":1},
+  "occurredAt":{"type":"string","format":"date-time"}
+ }
+}

@@ -1,0 +1,15 @@
+# ADR 0002 — Read-only reconciliation and capture journal
+
+Status: adopted for the local slice, 2026-10-25. Provider sandbox and production verification remain outstanding.
+
+2026-10-26 amendment: [ADR 0003](0003-durable-cart-and-multi-item-checkout.md) extends one capture transfer per checkout to one per checkout/seller. A captured payment remains unique on the checkout, and per-seller transfers sum to its verified total. Existing records are preserved.
+
+The initial slice can remain pending after browser/webhook interruption. Introduce bounded polling of **existing** provider orders, durable attempts, leases and an administrator review queue. Do not automatically recreate an order after ambiguous creation. An operator may propose an order ID; the adapter must independently verify its receipt equals the checkout UUID, amount equals the immutable total, and currency is INR before linking. Linking itself cannot confirm payment. Confirmation still requires a matching captured payment and the existing inventory transition.
+
+Use separate scheduler threads for outbox, expiry and reconciliation so a provider or Kafka timeout cannot hold up reservation expiry. Each read attempt has a 60-second lease, safe sanitized outcome code, jittered exponential backoff, and a maximum of 12 automatic attempts. Crashed leases can be reclaimed. After the cap, explicit audited operator retry remains available. No provider calls occur inside the checkout transaction. Unknown creation without a provider ID is queued for operator evidence rather than guessed or retried.
+
+Every newly accepted capture also inserts one immutable, balanced journal transfer in the same PostgreSQL transaction. Debit provider clearing; credit seller gross payable for confirmed orders or customer refund liability for late captures. This is **gross capture accounting**, not calculated net settlement: fees, taxes, commissions, refunds and payout reconciliation remain separate work. A paired debit/credit row enforces equal legs structurally; positive paise and unique capture payment IDs are database constraints. Corrections must be new entries; updates/deletes are blocked. Migration backfills only captures already recorded by the previous verified transition and labels their origin.
+
+Local provider observations use a durable, explicitly simulated table so tests can record a capture without calling commerce confirmation. The polling worker must discover it and confirm exactly once. Real Test Mode calls use authenticated Razorpay reads; no live mode or new payment authorization is introduced.
+
+Acceptance: interrupted capture recovered without callback; unauthorized operator actions denied; mismatched receipt/amount/order rejected; concurrent manual/background/webhook handling produces one confirmation and journal row; late capture posts refund liability without consuming reassigned stock; transient reads retain pending status and bounded retry; administrators can see/retry/link exceptions through real UI/API; seller financial reads cannot leak another tenant.

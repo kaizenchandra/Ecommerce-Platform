@@ -1,0 +1,7 @@
+import type {Metadata} from "next";
+import Link from "next/link";
+import "./globals.css";
+export const metadata:Metadata={title:{default:"Aangan · Everyday, thoughtfully chosen",template:"%s · Aangan"},description:"Discover considered goods from independent sellers. An India-first marketplace in development."};
+export default function Layout({children}:{children:React.ReactNode}) {
+  return <html lang="en-IN"><body><a className="skip" href="#main">Skip to content</a><div className="utility" role="region" aria-label="Marketplace information">A little more considered. A little more you. <span>India · INR</span></div><header className="site-header"><Link href="/" className="brand" aria-label="Aangan home">aangan<span>✳</span></Link><nav aria-label="Main navigation"><Link href="/">Discover</Link><Link href="/?q=Home">Home & living</Link><Link href="/cart">Bag</Link><Link href="/account">Account</Link><Link href="/seller">For sellers</Link></nav><Link href="/admin" className="admin-link">Workspace ↗</Link></header>{children}<footer><Link href="/" className="brand">aangan<span>✳</span></Link><p>Good things. Considered choices.</p><p className="fine">Development marketplace · Illustrative catalog · No live payments<br/>Delivery, tax and return policies require validation before launch.</p><div><Link href="/seller">Seller workspace</Link><Link href="/admin">Administration</Link></div></footer></body></html>;
+}

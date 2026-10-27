@@ -1,0 +1,20 @@
+import {test,expect} from '../../apps/storefront/node_modules/@playwright/test';
+import AxeBuilder from '../../apps/storefront/node_modules/@axe-core/playwright';
+import {randomUUID} from 'node:crypto';
+test('seller records shipment and customer sees persisted seller-reported tracking',async({page,context})=>{
+ const request=context.request,origin={Origin:'http://127.0.0.1:3000'};
+ await request.post('/api/guest-session',{headers:origin,data:{}});
+ const identity=(await (await request.get('/api/session-context')).json()).identityKey;
+ const offer=await (await request.post('http://127.0.0.1:8080/api/seller/offers',{headers:{Authorization:'Bearer local-seller-a'},data:{title:'Fulfillment '+randomUUID(),category:'Ceramics',description:'Fixture',pricePaise:9000,stock:1}})).json();
+ await request.post(`http://127.0.0.1:8080/api/admin/offers/${offer.id}/publish`,{headers:{Authorization:'Bearer local-admin'},data:{}});
+ const created=await request.post('/api/checkouts',{headers:{...origin,'X-Identity-Key':identity,'Idempotency-Key':randomUUID()},data:{offerId:offer.id,quantity:1,expectedPricePaise:9000,address:{name:'Test',line:'123 Test Lane',city:'Pune',pin:'411001'}}});expect(created.status()).toBe(201);const order=await created.json();
+ expect((await request.post(`/api/checkouts/${order.id}/simulate-capture`,{headers:origin,data:{}})).status()).toBe(200);
+ await page.goto('/seller');await page.getByLabel('Local seller credential').fill('local-seller-a');await page.getByRole('button',{name:'Open workspace'}).click();
+ const form=page.getByRole('form',{name:`Fulfill ${order.id}`,exact:true});
+ await form.getByRole('button',{name:'Mark packed'}).click();await form.getByLabel('Carrier',{exact:true}).fill('Fixture carrier');await form.getByLabel('Tracking reference').fill('TRACK-TEST');
+ await form.getByRole('button',{name:'Record shipment'}).click();await expect(form.getByText('SHIPPED',{exact:true})).toBeVisible();
+ await page.reload();await page.getByLabel('Local seller credential').fill('local-seller-a');await page.getByRole('button',{name:'Open workspace'}).click();
+ await form.getByRole('button',{name:'Report delivered'}).click();await expect(form.getByText('DELIVERED',{exact:true})).toBeVisible();
+ await page.goto('/orders/'+order.id);await expect(page.getByText(/Seller seller-a: DELIVERED/)).toBeVisible();await expect(page.getByText(/TRACK-TEST/)).toBeVisible();
+ expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
+});
